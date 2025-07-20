@@ -2,6 +2,7 @@ import openai
 from dotenv import load_dotenv, find_dotenv
 import streamlit as st
 import hashlib
+import sqlite3
 
 # Carrega as variáveis de ambiente
 _ = load_dotenv(find_dotenv())
@@ -55,7 +56,7 @@ def login_page():
         with col2:
             st.image("Sapiens_Logo.png", width=550)
             st.markdown(
-                "<p style='text-align: center; font-size: 1.2rem; color: #666; margin: 0.6rem 0;'>A evolução começa agora</p>",
+                "<p style='text-align: center; font-size: 1.2rem; color: #666; margin: 0.6rem 0;'>A evolução começa agora.</p>",
                 unsafe_allow_html=True
             )
             
@@ -74,14 +75,168 @@ def login_page():
                     else:
                         st.error("Usuário ou senha incorretos!")
             
-            # Credenciais de teste
-            with st.expander("Credenciais de teste", expanded=False):
-                st.markdown("""
-                **Usuários disponíveis para teste:**
-                - **Usuário:** admin | **Senha:** admin123
-                - **Usuário:** user | **Senha:** user123  
-                - **Usuário:** teste | **Senha:** teste123
-                """)
+            # Adicionar rodapé na tela de login
+    st.markdown('''
+<footer style="text-align: center; font-size: 0.85rem; color: #666; padding: 1rem 0;">
+  <p>
+    © 2025 <strong>Sapiens</strong> – Sistema de Apoio a Produto, Inovação e Novos Sistemas<br>
+    Desenvolvido como Side Project pelo Departamento de Inovação do Grupo Hapvida.
+  </p>
+  <p>
+    Todos os direitos reservados.
+    <a href="/termos-de-uso" style="margin: 0 8px;"> Termos de Uso</a> |
+    <a href="/politica-de-privacidade" style="margin: 0 8px;">Política de Privacidade</a>
+  </p>
+  <p>Versão 1.0.0</p>
+</footer>
+''', unsafe_allow_html=True)
+
+# --- Funções utilitárias para banco de dados de usuários ---
+DB_PATH = "usuarios.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            perfil TEXT NOT NULL
+        )
+    ''')
+    # Garante que o admin sempre existe
+    c.execute("SELECT * FROM usuarios WHERE username = ?", ("admin",))
+    if not c.fetchone():
+        c.execute("INSERT INTO usuarios (username, password, perfil) VALUES (?, ?, ?)", ("admin", hash_password("admin123"), "Admin"))
+    conn.commit()
+    conn.close()
+
+def get_usuarios():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, username, perfil FROM usuarios")
+    data = c.fetchall()
+    conn.close()
+    return data
+
+def add_usuario(username, password, perfil):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO usuarios (username, password, perfil) VALUES (?, ?, ?)", (username, hash_password(password), perfil))
+        conn.commit()
+        return True, None
+    except sqlite3.IntegrityError as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+def update_usuario(user_id, username, perfil):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE usuarios SET username = ?, perfil = ? WHERE id = ?", (username, perfil, user_id))
+        conn.commit()
+        return True, None
+    except sqlite3.IntegrityError as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+def delete_usuario(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM usuarios WHERE id = ? AND username != 'admin'", (user_id,))
+    conn.commit()
+    conn.close()
+
+def reset_password(user_id, new_password):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE usuarios SET password = ? WHERE id = ?", (hash_password(new_password), user_id))
+    conn.commit()
+    conn.close()
+
+def gerenciamento_page():
+    init_db()
+    st.title("Gerenciamento do Sistema")
+    st.write("Bem-vindo à área de administração. Aqui você pode gerenciar usuários, permissões e configurações do sistema.")
+
+    usuarios = get_usuarios()
+    import pandas as pd
+
+    # Visualizar usuários
+    with st.expander("Visualizar usuários", expanded=True):
+        st.subheader("Usuários cadastrados")
+        if usuarios:
+            df = pd.DataFrame(usuarios, columns=["ID", "Usuário", "Perfil"])
+            st.dataframe(df, hide_index=True)
+        else:
+            st.info("Nenhum usuário cadastrado.")
+
+    # Adicionar usuário
+    with st.expander("Adicionar novo usuário", expanded=False):
+        st.subheader("Adicionar novo usuário")
+        with st.form("add_user_form"):
+            new_username = st.text_input("Novo usuário")
+            new_password = st.text_input("Senha", type="password")
+            new_perfil = st.selectbox("Perfil", ["Admin", "User"])
+            add_btn = st.form_submit_button("Adicionar usuário")
+            if add_btn:
+                ok, err = add_usuario(new_username, new_password, new_perfil)
+                if ok:
+                    st.success(f"Usuário '{new_username}' adicionado com sucesso!")
+                    st.rerun()
+                else:
+                    st.error(f"Erro ao adicionar usuário: {err}")
+
+    # Editar usuário
+    with st.expander("Editar usuário", expanded=False):
+        st.subheader("Editar usuário")
+        if usuarios:
+            user_options = {f"{u[1]} (ID {u[0]})": u for u in usuarios if u[1] != "admin"}
+            if user_options:
+                selected = st.selectbox("Selecione um usuário para editar", list(user_options.keys()), key="edit_user_select")
+                user = user_options[selected]
+                with st.form("edit_user_form"):
+                    edit_username = st.text_input("Usuário", value=user[1])
+                    edit_perfil = st.selectbox("Perfil", ["Admin", "User"], index=0 if user[2]=="Admin" else 1)
+                    new_pass = st.text_input("Nova senha (opcional)", type="password")
+                    update_btn = st.form_submit_button("Salvar alterações")
+                    if update_btn:
+                        ok, err = update_usuario(user[0], edit_username, edit_perfil)
+                        if ok:
+                            st.success("Usuário atualizado com sucesso!")
+                            st.rerun()
+                        else:
+                            st.error(f"Erro ao atualizar usuário: {err}")
+                    if new_pass:
+                        if st.form_submit_button("Redefinir senha"):
+                            reset_password(user[0], new_pass)
+                            st.success("Senha redefinida com sucesso!")
+                            st.rerun()
+            else:
+                st.info("Nenhum usuário editável disponível.")
+        else:
+            st.info("Nenhum usuário cadastrado.")
+
+    # Remover usuário
+    with st.expander("Remover usuário", expanded=False):
+        st.subheader("Remover usuário")
+        if usuarios:
+            user_options = {f"{u[1]} (ID {u[0]})": u for u in usuarios if u[1] != "admin"}
+            if user_options:
+                selected = st.selectbox("Selecione um usuário para remover", list(user_options.keys()), key="remove_user_select")
+                user = user_options[selected]
+                if st.button("Remover usuário"):
+                    delete_usuario(user[0])
+                    st.warning("Usuário removido!")
+                    st.rerun()
+            else:
+                st.info("Nenhum usuário removível disponível.")
+        else:
+            st.info("Nenhum usuário cadastrado.")
 
 # Função para tela principal (após login)
 def main_app():
@@ -92,11 +247,13 @@ def main_app():
         st.markdown("---")
         
         # Menu de navegação
+        menu_options = ["EF Generator", "Project Canvas"]
+        if st.session_state.username == "admin":
+            menu_options.append("Gerenciamento")
         menu = st.selectbox(
             "Navegação",
-            ["EF Generator", "Project Canvas"]
+            menu_options
         )
-        
         st.markdown("---")
         
         if st.button("Logout", use_container_width=True):
@@ -109,6 +266,8 @@ def main_app():
         ef_generator_page()
     elif menu == "Project Canvas":
         project_canvas_page()
+    elif menu == "Gerenciamento":
+        gerenciamento_page()
 
 def ef_generator_page():
     # Conteúdo principal centralizado
