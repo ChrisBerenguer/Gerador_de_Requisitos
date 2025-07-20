@@ -38,12 +38,11 @@ def login_page():
     def login_page():
     # Container com borda vermelha temporária para debug (remova depois)
         st.markdown("""
-        <div style="display: flex; justify-content: center; border: 1px solid red;">
+        <div style="display: flex; justify-content: center;">
             <img src="Sapiens_Logo.png" style="
                 width: 400px;
                 margin: 0 auto;
                 display: block;
-                border: 2px dashed blue;  /* Remove depois de testar */
             ">
         </div>
         """, unsafe_allow_html=True)
@@ -59,6 +58,39 @@ def login_page():
                 "<p style='text-align: center; font-size: 1.2rem; color: #666; margin: 0.6rem 0;'>A evolução começa agora.</p>",
                 unsafe_allow_html=True
             )
+            # Ajuste de estilo para inputs, botão e container do formulário
+            st.markdown("""
+            <style>
+                /* Remove borda e sombreamento dos inputs e container */
+                div[data-testid="stForm"] {
+                    border: none !important;
+                    box-shadow: none !important;
+                    width: 80% !important;
+                    margin-left: auto !important;
+                    margin-right: auto !important;
+                }
+                
+                /* Remove borda dos inputs */
+                input {
+                    border: none !important;
+                    box-shadow: none !important;
+                    background-color: #f5f7fa !important;
+                }
+
+                /* Estilo do botão "Entrar" */
+                button[kind="primary"] {
+                    border: none !important;
+                    box-shadow: none !important;
+                    background-color: #0051A2 !important; /* cor personalizada opcional */
+                    color: white;
+                }
+
+                /* Container do formulário */
+                div[data-testid="stForm"] > div {
+                    padding: 0 !important;
+                }
+            </style>
+            """, unsafe_allow_html=True)
             
             # Formulário de login
             with st.form("login_form"):
@@ -160,6 +192,9 @@ def reset_password(user_id, new_password):
 
 def gerenciamento_page():
     init_db()
+    st.markdown("""
+    <div style='width: 75%; margin-left: auto; margin-right: auto;'>
+    """, unsafe_allow_html=True)
     st.title("Gerenciamento do Sistema")
     st.write("Bem-vindo à área de administração. Aqui você pode gerenciar usuários, permissões e configurações do sistema.")
 
@@ -237,6 +272,7 @@ def gerenciamento_page():
                 st.info("Nenhum usuário removível disponível.")
         else:
             st.info("Nenhum usuário cadastrado.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Função para tela principal (após login)
 def main_app():
@@ -247,7 +283,7 @@ def main_app():
         st.markdown("---")
         
         # Menu de navegação
-        menu_options = ["EF Generator", "Project Canvas"]
+        menu_options = ["EF Generator"]
         if st.session_state.username == "admin":
             menu_options.append("Gerenciamento")
         menu = st.selectbox(
@@ -264,8 +300,7 @@ def main_app():
     # Conteúdo baseado na seleção do menu
     if menu == "EF Generator":
         ef_generator_page()
-    elif menu == "Project Canvas":
-        project_canvas_page()
+    # Removido Project Canvas
     elif menu == "Gerenciamento":
         gerenciamento_page()
 
