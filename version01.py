@@ -4,6 +4,7 @@ import streamlit as st
 import hashlib
 import sqlite3
 import re
+import time
 
 # Carrega as variáveis de ambiente
 _ = load_dotenv(find_dotenv())
@@ -559,9 +560,16 @@ def meus_requisitos_page():
             with st.expander(f"{titulo_expander} | {tipo} gerado em {criado_em} | EF: {ef_label}"):
                 st.markdown(texto, unsafe_allow_html=True)
                 st.code(texto, language=None)
-                if st.button("Copiar requisito", key=f"copy_{req_id}"):
-                    st.session_state.copied = texto
-                    st.success("Requisito copiado para a área de transferência (use Ctrl+C no campo acima).")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Copiar requisito", key=f"copy_{req_id}"):
+                        st.session_state.copied = texto
+                        st.success("Requisito copiado para a área de transferência (use Ctrl+C no campo acima).")
+                with col2:
+                    if st.button("Excluir", key=f"delete_{req_id}"):
+                        delete_requisito(req_id)
+                        st.warning("Requisito excluído!")
+                        st.rerun()
     else:
         st.info("Você ainda não salvou nenhum requisito.")
     # Botão de download dos requisitos filtrados
@@ -1243,6 +1251,13 @@ def get_requisitos_usuario(username, ef_id=None):
     conn.close()
     return data
 
+def delete_requisito(req_id):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM requisitos WHERE id = ?", (req_id,))
+    conn.commit()
+    conn.close()
+
 # --- Funções utilitárias para banco de dados de EFs do usuário ---
 
 def init_efs_db():
@@ -1321,6 +1336,13 @@ def minhas_efs_page():
         unsafe_allow_html=True
     )
     st.markdown('<div class="meus-requisitos-title">Minhas EFs</div>', unsafe_allow_html=True)
+    efs = get_efs_usuario(st.session_state.username)
+    if efs:
+        import pandas as pd
+        df_efs = pd.DataFrame(efs, columns=["ID", "Lecom", "Tipo", "Título", "Deadline"])
+        st.dataframe(df_efs[["Título", "Tipo", "Lecom", "Deadline"]], hide_index=True)
+    else:
+        st.info("Nenhuma EF cadastrada.")
     # Select para ação
     ef_action = st.selectbox(
         "O que deseja fazer?",
@@ -1331,7 +1353,7 @@ def minhas_efs_page():
     if ef_action == "Criar EF":
         with st.expander("Criar nova EF", expanded=True):
             with st.form("add_ef_form"):
-                lecom = st.number_input("Lecom", min_value=1, max_value=999999, step=1, format="%d")
+                lecom = st.number_input("Lecom", min_value=100000, max_value=999999, step=1, format="%06d")
                 tipo = st.selectbox("Tipo", ["Melhoria", "Projeto"])
                 titulo = st.text_input("Título", max_chars=100)
                 deadline = st.date_input("Deadline", format="DD/MM/YYYY")
@@ -1350,7 +1372,7 @@ def minhas_efs_page():
                 selected = st.selectbox("Selecione uma EF para editar/remover", list(ef_options.keys()), key="edit_ef_select")
                 ef = ef_options[selected]
                 with st.form("edit_ef_form"):
-                    edit_lecom = st.number_input("Lecom", min_value=100000, max_value=999999, step=1, value=ef[1], format="%d", key="edit_lecom")
+                    edit_lecom = st.number_input("Lecom", min_value=2, max_value=999999, step=1, value=ef[1], format="%d", key="edit_lecom")
                     edit_tipo = st.selectbox("Tipo", ["Melhoria", "Projeto"], index=0 if ef[2]=="Melhoria" else 1, key="edit_tipo")
                     edit_titulo = st.text_input("Título", value=ef[3], max_chars=100, key="edit_titulo")
                     import datetime
@@ -1377,10 +1399,12 @@ def minhas_efs_page():
                         deadline_str = edit_deadline.strftime("%d/%m/%Y")
                         update_ef(ef[0], edit_lecom, edit_tipo, edit_titulo, deadline_str)
                         st.success("EF atualizada com sucesso!")
+                        time.sleep(5)
                         st.rerun()
                     if delete_btn:
                         delete_ef(ef[0])
                         st.warning("EF removida!")
+                        time.sleep(5)
                         st.rerun()
 
 def main():
