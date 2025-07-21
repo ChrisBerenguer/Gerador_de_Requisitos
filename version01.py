@@ -3,6 +3,7 @@ from dotenv import load_dotenv, find_dotenv
 import streamlit as st
 import hashlib
 import sqlite3
+import re
 
 # Carrega as variáveis de ambiente
 _ = load_dotenv(find_dotenv())
@@ -22,15 +23,15 @@ def hash_password(password):
 
 # Função para verificar credenciais
 def check_credentials(username, password):
-    # Credenciais hardcoded (em produção, use banco de dados)
-    valid_credentials = {
-        "admin": hash_password("admin123"),
-        "user": hash_password("user123"),
-        "teste": hash_password("teste123")
-    }
-    
-    hashed_password = hash_password(password)
-    return username in valid_credentials and valid_credentials[username] == hashed_password
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT password FROM usuarios WHERE username = ?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        hashed_password = row[0]
+        return hashed_password == hash_password(password)
+    return False
 
 # Função para tela de login
 def login_page():
@@ -164,11 +165,14 @@ def add_usuario(username, password, perfil):
     finally:
         conn.close()
 
-def update_usuario(user_id, username, perfil):
+def update_usuario(user_id, username, perfil, new_password=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("UPDATE usuarios SET username = ?, perfil = ? WHERE id = ?", (username, perfil, user_id))
+        if new_password:
+            c.execute("UPDATE usuarios SET username = ?, perfil = ?, password = ? WHERE id = ?", (username, perfil, hash_password(new_password), user_id))
+        else:
+            c.execute("UPDATE usuarios SET username = ?, perfil = ? WHERE id = ?", (username, perfil, user_id))
         conn.commit()
         return True, None
     except sqlite3.IntegrityError as e:
@@ -219,12 +223,15 @@ def gerenciamento_page():
             new_perfil = st.selectbox("Perfil", ["Admin", "User"])
             add_btn = st.form_submit_button("Adicionar usuário")
             if add_btn:
-                ok, err = add_usuario(new_username, new_password, new_perfil)
-                if ok:
-                    st.success(f"Usuário '{new_username}' adicionado com sucesso!")
-                    st.rerun()
+                if not new_username or not new_password:
+                    st.error("Usuário e senha são obrigatórios!")
                 else:
-                    st.error(f"Erro ao adicionar usuário: {err}")
+                    ok, err = add_usuario(new_username, new_password, new_perfil)
+                    if ok:
+                        st.success(f"Usuário '{new_username}' adicionado com sucesso!")
+                        st.rerun()
+                    else:
+                        st.error(f"Erro ao adicionar usuário: {err}")
 
     # Editar usuário
     with st.expander("Editar usuário", expanded=False):
@@ -240,17 +247,16 @@ def gerenciamento_page():
                     new_pass = st.text_input("Nova senha (opcional)", type="password")
                     update_btn = st.form_submit_button("Salvar alterações")
                     if update_btn:
-                        ok, err = update_usuario(user[0], edit_username, edit_perfil)
+                        ok, err = update_usuario(user[0], edit_username, edit_perfil, new_pass if new_pass else None)
                         if ok:
-                            st.success("Usuário atualizado com sucesso!")
+                            if new_pass:
+                                st.success("Senha redefinida com sucesso!", icon="✅")
+                                import time
+                                time.sleep(4)
+                            st.success("Usuário atualizado com sucesso!", icon="✅")
                             st.rerun()
                         else:
                             st.error(f"Erro ao atualizar usuário: {err}")
-                    if new_pass:
-                        if st.form_submit_button("Redefinir senha"):
-                            reset_password(user[0], new_pass)
-                            st.success("Senha redefinida com sucesso!")
-                            st.rerun()
             else:
                 st.info("Nenhum usuário editável disponível.")
         else:
@@ -274,17 +280,38 @@ def gerenciamento_page():
             st.info("Nenhum usuário cadastrado.")
     st.markdown("</div>", unsafe_allow_html=True)
 
+def get_user_profile(username):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT perfil FROM usuarios WHERE username = ?", (username,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 # Função para tela principal (após login)
 def main_app():
     # Sidebar com informações do usuário e navegação
     with st.sidebar:
         st.image("Sapiens_Logo_Vertical.png", width=117)
+        st.markdown(
+            '''
+            <style>
+            [data-testid="stSidebar"] img {
+                display: block;
+                margin-left: auto;
+                margin-right: auto;
+            }
+            </style>
+            ''',
+            unsafe_allow_html=True
+        )
         st.markdown(f"**Usuário:** {st.session_state.username}")
         st.markdown("---")
         
         # Menu de navegação
-        menu_options = ["EF Generator"]
-        if st.session_state.username == "admin":
+        menu_options = ["EF Generator", "Meus requisitos", "Minhas EFs"]
+        user_profile = get_user_profile(st.session_state.username)
+        if user_profile == "Admin":
             menu_options.append("Gerenciamento")
         menu = st.selectbox(
             "Navegação",
@@ -300,7 +327,10 @@ def main_app():
     # Conteúdo baseado na seleção do menu
     if menu == "EF Generator":
         ef_generator_page()
-    # Removido Project Canvas
+    elif menu == "Meus requisitos":
+        meus_requisitos_page()
+    elif menu == "Minhas EFs":
+        minhas_efs_page()
     elif menu == "Gerenciamento":
         gerenciamento_page()
 
@@ -323,25 +353,49 @@ def ef_generator_page():
         st.info(EXPLANATIONS[prompt_nome])
 
         requisito = st.text_area("Requisito de Software", "", height=100)
+        if 'ultimo_requisito_gerado' not in st.session_state:
+            st.session_state.ultimo_requisito_gerado = None
+            st.session_state.ultimo_prompt_nome = None
+            st.session_state.ultimo_tokens = None
         if st.button("Formatar Requisito"):
             if requisito.strip():
                 with st.spinner("Processando..."):
                     resultado, tokens = gerar_user_story_bdd(requisito, system_prompt)
-                st.subheader(f"Documento no padrão: {prompt_nome}")
-                st.markdown(resultado, unsafe_allow_html=True)
-                if tokens is not None:
-                    st.caption(f"Tokens utilizados: {tokens}")
-
-                if prompt_nome == "BPMN 2.0" and requisito.strip() and resultado:
-                    bpmn_xml = gerar_bpmn_xml(resultado)
-                    st.download_button(
-                        label="Exportar BPMN para Draw.io",
-                        data=bpmn_xml,
-                        file_name="processo.bpmn",
-                        mime="application/xml"
-                    )
+                st.session_state.ultimo_requisito_gerado = resultado
+                st.session_state.ultimo_prompt_nome = prompt_nome
+                st.session_state.ultimo_tokens = tokens
             else:
                 st.warning("Por favor, insira um requisito de software.")
+                st.session_state.ultimo_requisito_gerado = None
+                st.session_state.ultimo_prompt_nome = None
+                st.session_state.ultimo_tokens = None
+        # Exibe o requisito gerado e o botão Adicionar, se houver
+        if st.session_state.ultimo_requisito_gerado:
+            st.subheader(f"Documento no padrão: {st.session_state.ultimo_prompt_nome}")
+            st.markdown(st.session_state.ultimo_requisito_gerado, unsafe_allow_html=True)
+            if st.session_state.ultimo_tokens is not None:
+                st.caption(f"Tokens utilizados: {st.session_state.ultimo_tokens}")
+            if st.session_state.ultimo_prompt_nome == "BPMN 2.0" and requisito.strip() and st.session_state.ultimo_requisito_gerado:
+                bpmn_xml = gerar_bpmn_xml(st.session_state.ultimo_requisito_gerado)
+                st.download_button(
+                    label="Exportar BPMN para Draw.io",
+                    data=bpmn_xml,
+                    file_name="processo.bpmn",
+                    mime="application/xml"
+                )
+            # Select para associar a uma EF
+            efs = get_efs_usuario(st.session_state.username)
+            ef_options = {"Não associar": None}
+            for e in efs:
+                ef_options[f"{e[1]} - {e[2]} - {e[3]} (Deadline: {e[4]})"] = e[0]
+            ef_select = st.selectbox("Associar a EF", list(ef_options.keys()), key="assoc_ef")
+            ef_id = ef_options[ef_select]
+            if st.button("Adicionar", key="add_requisito_btn"):
+                add_requisito(st.session_state.username, st.session_state.ultimo_requisito_gerado, st.session_state.ultimo_prompt_nome, ef_id)
+                st.success("Requisito adicionado aos seus requisitos!")
+                st.session_state.ultimo_requisito_gerado = None
+                st.session_state.ultimo_prompt_nome = None
+                st.session_state.ultimo_tokens = None
 
 def project_canvas_page():
     # Container centralizado para o formulário
@@ -419,6 +473,154 @@ def project_canvas_page():
                 st.markdown(f"**Usuários e Stakeholders:** {usuarios_stakeholders}")
                 st.markdown(f"**Jornadas e Sistemas:** {jornadas_sistemas}")
                 st.markdown(f"**Riscos e Planos:** {riscos_planos}")
+
+def meus_requisitos_page():
+    # CSS para largura dos componentes
+    st.markdown(
+        """
+        <style>
+        .meus-requisitos-title {
+            max-width: 90%;
+            width: 100%;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: center;
+            font-size: 2.4rem;
+            font-weight: 600;
+            padding-bottom: 1rem;
+        }
+        section[data-testid=\"stExpander\"], .stExpander {
+            width: 100%;
+            max-width: 1000px;
+            margin-left: auto;
+            margin-right: auto;
+            box-sizing: border-box;
+        }
+        section[data-testid=\"stExpander\"] > div, .stExpander > div {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        div[data-testid=\"stSelectbox\"], .stSelectbox {
+            max-width: 90%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown('<div class="meus-requisitos-title">Meus Requisitos</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        /* Centraliza e define largura máxima para selectbox, expander e botões */
+        div[data-testid="stSelectbox"], .stSelectbox,
+        section[data-testid="stExpander"], .stExpander,
+        div[data-testid="stDownloadButton"], .stDownloadButton {
+            max-width: 1000px !important;
+            width: 100% !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            box-sizing: border-box;
+            display: block;
+        }
+        /* Ajusta colunas dos botões para não ficarem muito largas */
+        div[data-testid="stHorizontalBlock"] > div {
+            max-width: 500px !important;
+            width: 100% !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        '''
+        <div style="max-width: 1000px; width: 90%; margin-left: auto; margin-right: auto;">
+        ''',
+        unsafe_allow_html=True
+    )
+    # Select para filtrar por EF (fora das colunas)
+    efs = get_efs_usuario(st.session_state.username)
+    ef_options = {"Todos": None}
+    ef_nome_map = {}
+    for e in efs:
+        ef_options[f"{e[1]} - {e[2]} - {e[3]} (Deadline: {e[4]})"] = e[0]
+        ef_nome_map[e[0]] = f"{e[1]} - {e[2]} - {e[3]} (Deadline: {e[4]})"
+    selected_ef = st.selectbox("Filtrar por EF", list(ef_options.keys()), key="filtro_ef")
+    ef_id = ef_options[selected_ef]
+    # Todos os acordeons também fora das colunas
+    requisitos = get_requisitos_usuario(st.session_state.username, ef_id)
+    if requisitos:
+        for req_id, texto, tipo, criado_em, ef_id_req in requisitos:
+            ef_label = ef_nome_map.get(ef_id_req, "Não associado a EF")
+            titulo_expander = extrair_titulo(texto, tipo)
+            with st.expander(f"{titulo_expander} | {tipo} gerado em {criado_em} | EF: {ef_label}"):
+                st.markdown(texto, unsafe_allow_html=True)
+                st.code(texto, language=None)
+                if st.button("Copiar requisito", key=f"copy_{req_id}"):
+                    st.session_state.copied = texto
+                    st.success("Requisito copiado para a área de transferência (use Ctrl+C no campo acima).")
+    else:
+        st.info("Você ainda não salvou nenhum requisito.")
+    # Botão de download dos requisitos filtrados
+    if requisitos:
+        conteudo_txt = "\n\n".join([f"{tipo} gerado em {criado_em} | EF: {ef_nome_map.get(ef_id_req, 'Não associado a EF')}\n{text}" for req_id, text, tipo, criado_em, ef_id_req in requisitos])
+        import pandas as pd
+        df_csv = pd.DataFrame([
+            {
+                "Tipo": tipo,
+                "Data": criado_em,
+                "EF Associada": ef_nome_map.get(ef_id_req, 'Não associado a EF'),
+                "Requisito": text
+            }
+            for req_id, text, tipo, criado_em, ef_id_req in requisitos
+        ])
+        download_format = st.selectbox("Formato de download", ["TXT", "CSV"], key="download_format")
+        if download_format == "TXT":
+            st.download_button(
+                label="Download TXT",
+                data=conteudo_txt,
+                file_name="meus_requisitos.txt",
+                mime="text/plain"
+            )
+        else:
+            st.download_button(
+                label="Download CSV",
+                data=df_csv.to_csv(index=False, sep=';'),
+                file_name="meus_requisitos.csv",
+                mime="text/csv"
+            )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def extrair_titulo(texto, tipo):
+    if tipo == "Use Cases (UML)":
+        match = re.search(r"## Caso de Uso: (.+)", texto)
+        if match:
+            return f"Caso de Uso: {match.group(1).strip()}"
+    elif tipo == "BDD User Stories":
+        match = re.search(r"### User Story [0-9]+: (.+)", texto)
+        if match:
+            return f"User Story: {match.group(1).strip()}"
+    elif tipo == "ERS/SRS (IEEE 830)":
+        match = re.search(r"### 1\. Introdução\s*\*\*1\.1 Descrição Geral:\*\*\s*(.+)", texto, re.DOTALL)
+        if match:
+            return f"Requisito: {match.group(1).strip().splitlines()[0]}"
+    elif tipo == "Model Cards (ML)":
+        match = re.search(r"## Ficha Técnica do Modelo \(Model Card\)\s*### 1\. Detalhes do Modelo\s*- \*\*Organização ou pessoa responsável pelo desenvolvimento do modelo:\*\*\s*(.+)", texto)
+        if match:
+            return f"Model Card: {match.group(1).strip()}"
+    elif tipo == "BPMN 2.0":
+        match = re.search(r"## Fluxo do Processo \(Formato Passo a Passo BPMN\)\s*1\. \*\*Evento:\*\*\s*(.+)", texto)
+        if match:
+            return f"Processo: {match.group(1).strip()}"
+    elif tipo == "C4 Model":
+        match = re.search(r"## Nível 1 – Diagrama de Contexto\s*- \*\*Nome do Sistema:\*\*\s*(.+)", texto)
+        if match:
+            return f"C4 Model: {match.group(1).strip()}"
+    # fallback
+    return tipo
 
 # Dicionário de system prompts
 SYSTEM_PROMPTS = {
@@ -991,10 +1193,204 @@ def gerar_bpmn_xml(texto_bpmn):
 '''
     return bpmn_template
 
+# --- Funções utilitárias para banco de dados de requisitos do usuário ---
+REQUISITOS_DB_PATH = "meus_requisitos.db"
+
+def init_requisitos_db():
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS requisitos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            texto_requisito TEXT NOT NULL,
+            tipo_requisito TEXT NOT NULL,
+            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ef_id INTEGER
+        )
+    ''')
+    # Tenta adicionar a coluna tipo_requisito se não existir (migração leve)
+    try:
+        c.execute("ALTER TABLE requisitos ADD COLUMN tipo_requisito TEXT")
+    except sqlite3.OperationalError:
+        pass  # Coluna já existe
+    # Tenta adicionar a coluna ef_id se não existir (migração leve)
+    try:
+        c.execute("ALTER TABLE requisitos ADD COLUMN ef_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # Coluna já existe
+    conn.commit()
+    conn.close()
+
+def add_requisito(username, texto_requisito, tipo_requisito, ef_id=None):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    if ef_id:
+        c.execute("INSERT INTO requisitos (username, texto_requisito, tipo_requisito, ef_id) VALUES (?, ?, ?, ?)", (username, texto_requisito, tipo_requisito, ef_id))
+    else:
+        c.execute("INSERT INTO requisitos (username, texto_requisito, tipo_requisito) VALUES (?, ?, ?)", (username, texto_requisito, tipo_requisito))
+    conn.commit()
+    conn.close()
+
+def get_requisitos_usuario(username, ef_id=None):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    if ef_id:
+        c.execute("SELECT id, texto_requisito, tipo_requisito, criado_em, ef_id FROM requisitos WHERE username = ? AND ef_id = ? ORDER BY criado_em DESC", (username, ef_id))
+    else:
+        c.execute("SELECT id, texto_requisito, tipo_requisito, criado_em, ef_id FROM requisitos WHERE username = ? ORDER BY criado_em DESC", (username,))
+    data = c.fetchall()
+    conn.close()
+    return data
+
+# --- Funções utilitárias para banco de dados de EFs do usuário ---
+
+def init_efs_db():
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS efs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            lecom INTEGER NOT NULL,
+            tipo TEXT NOT NULL,
+            titulo TEXT NOT NULL,
+            deadline TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_ef(username, lecom, tipo, titulo, deadline):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO efs (username, lecom, tipo, titulo, deadline) VALUES (?, ?, ?, ?, ?)", (username, lecom, tipo, titulo, deadline))
+    conn.commit()
+    conn.close()
+
+def get_efs_usuario(username):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, lecom, tipo, titulo, deadline FROM efs WHERE username = ? ORDER BY deadline DESC", (username,))
+    data = c.fetchall()
+    conn.close()
+    return data
+
+def update_ef(ef_id, lecom, tipo, titulo, deadline):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE efs SET lecom = ?, tipo = ?, titulo = ?, deadline = ? WHERE id = ?", (lecom, tipo, titulo, deadline, ef_id))
+    conn.commit()
+    conn.close()
+
+def delete_ef(ef_id):
+    conn = sqlite3.connect(REQUISITOS_DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM efs WHERE id = ?", (ef_id,))
+    conn.commit()
+    conn.close()
+
+def minhas_efs_page():
+    import pandas as pd
+    st.markdown(
+        """
+        <style>
+        .meus-requisitos-title {
+            max-width: 90%;
+            width: 100%;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: center;
+            font-size: 2.4rem;
+            font-weight: 600;
+            padding-bottom: 1rem;
+        }
+        section[data-testid=\"stExpander\"], .stExpander {
+            width: 100%;
+            max-width: 1000px;
+            margin-left: auto;
+            margin-right: auto;
+            box-sizing: border-box;
+        }
+        section[data-testid=\"stExpander\"] > div, .stExpander > div {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown('<div class="meus-requisitos-title">Minhas EFs</div>', unsafe_allow_html=True)
+    # Select para ação
+    ef_action = st.selectbox(
+        "O que deseja fazer?",
+        ["Criar EF", "Editar/Excluir EF"],
+        key="ef_action"
+    )
+    # Acordeon para criar nova EF
+    if ef_action == "Criar EF":
+        with st.expander("Criar nova EF", expanded=True):
+            with st.form("add_ef_form"):
+                lecom = st.number_input("Lecom", min_value=1, max_value=999999, step=1, format="%d")
+                tipo = st.selectbox("Tipo", ["Melhoria", "Projeto"])
+                titulo = st.text_input("Título", max_chars=100)
+                deadline = st.date_input("Deadline", format="DD/MM/YYYY")
+                submit_ef = st.form_submit_button("Adicionar EF")
+                if submit_ef:
+                    deadline_str = deadline.strftime("%d/%m/%Y")
+                    add_ef(st.session_state.username, lecom, tipo, titulo, deadline_str)
+                    st.success("EF adicionada com sucesso!")
+                    st.rerun()
+    # Acordeon para editar/remover EF
+    if ef_action == "Editar/Excluir EF":
+        efs = get_efs_usuario(st.session_state.username)
+        if efs:
+            with st.expander("Editar/Excluir EF", expanded=True):
+                ef_options = {f"{e[1]} - {e[2]} - {e[3]} (Deadline: {e[4]})": e for e in efs}
+                selected = st.selectbox("Selecione uma EF para editar/remover", list(ef_options.keys()), key="edit_ef_select")
+                ef = ef_options[selected]
+                with st.form("edit_ef_form"):
+                    edit_lecom = st.number_input("Lecom", min_value=100000, max_value=999999, step=1, value=ef[1], format="%d", key="edit_lecom")
+                    edit_tipo = st.selectbox("Tipo", ["Melhoria", "Projeto"], index=0 if ef[2]=="Melhoria" else 1, key="edit_tipo")
+                    edit_titulo = st.text_input("Título", value=ef[3], max_chars=100, key="edit_titulo")
+                    import datetime
+                    day, month, year = map(int, ef[4].split("/"))
+                    edit_deadline = st.date_input("Deadline", value=datetime.date(year, month, day), format="DD/MM/YYYY", key="edit_deadline")
+                    st.markdown(
+                        '''
+                        <style>
+                        div[data-testid="column"] {
+                            padding-right: 0 !important;
+                        }
+                        div[data-testid="column"]:not(:last-child) {
+                            margin-right: 0.5rem !important;
+                        }
+                        </style>
+                        ''',
+                        unsafe_allow_html=True
+                    )
+                    col1, col2 = st.columns(2)
+                    # Botão 'Salvar alterações' acima, 'Remover EF' abaixo, ambos centralizados
+                    update_btn = st.form_submit_button("Salvar alterações")
+                    delete_btn = st.form_submit_button("Remover EF", type="secondary")
+                    if update_btn:
+                        deadline_str = edit_deadline.strftime("%d/%m/%Y")
+                        update_ef(ef[0], edit_lecom, edit_tipo, edit_titulo, deadline_str)
+                        st.success("EF atualizada com sucesso!")
+                        st.rerun()
+                    if delete_btn:
+                        delete_ef(ef[0])
+                        st.warning("EF removida!")
+                        st.rerun()
+
 def main():
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
         st.session_state.username = None
+
+    # Inicializa o banco de requisitos
+    init_requisitos_db()
+    init_efs_db() # Inicializa o banco de EFs
 
     if not st.session_state.authenticated:
         login_page()
